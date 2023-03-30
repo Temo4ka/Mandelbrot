@@ -1,4 +1,4 @@
-#pragma GCC optimize("O3")
+//#pragma GCC optimize("O3")
 #include "config.h"
 #include "header.h"
 
@@ -9,10 +9,12 @@ int main()
     sf::Image image = {};
     image.create(WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color::Green);
 
-    int RED  = START_KRED;
-    int BLUE = START_KBLUE;
+    float RED  = START_KRED;
+    float BLUE = START_KBLUE;
 
     FPS curfps = {};
+
+    int drawFlag = 1;
 
     while (window.isOpen())
     {
@@ -27,14 +29,13 @@ int main()
 
         updateFPS(&curfps);
 
-        window.setTitle(curfps.fps);
-        sf::Texture texture = {};
-        texture.loadFromImage(image);
-        sf::Sprite sprite = {};
-        sprite.setTexture(texture);
-        window.draw(sprite);
-        window.display();
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Escape))
+            drawFlag ^= 1;
 
+        window.setTitle(curfps.fps);
+
+        if (drawFlag) drawMandelbrot(&window, image);
+ 
     }
 
     dctorFPS(&curfps);
@@ -42,47 +43,89 @@ int main()
     return 0;
 }
 
-int buildMandelbrot(sf::Image *image, int *red_k, int *blue_k) {
+int buildMandelbrot(sf::Image *image, float *red_k, float *blue_k) {
     const float maxY = START_Y + WINDOW_HEIGHT * DELTA;
     const float maxX = START_X +  WINDOW_WIDTH * DELTA;
 
-    *blue_k = *blue_k + rand() % 2 - (rand() % 2) * 2;
-    *red_k  = *red_k  + rand() % 2 - (rand() % 2) * 2;
+    *blue_k = *blue_k + rand() % 10 / 10.f;
+    *red_k  = *red_k  + rand() % 10 / 10.f;
     
     __8f_t _startPoint = {   0  , DELTA, DELTA * 2, DELTA * 3, DELTA * 4, DELTA * 5, DELTA * 6, DELTA * 7 };
-    __8f_t   _delta    = { DELTA, DELTA,   DELTA  ,   DELTA  ,   DELTA  ,   DELTA  ,   DELTA  ,   DELTA   };
 
-    for (float y = START_Y; y < maxY; y += DELTA) {
-        for (float x = START_X; x < maxX; x += DELTA) {
-            float curX  = x;
-            float curY  = y;
-             int   n    = 0;
+    __8f_t    _R   = {};
+    __8f_t  _delta = {};
 
-            for (; n < MAX_N; n++) {
-                float p1 =   curX * curX  ;
-                float p2 =   curY * curY  ;
-                float p3 = 2 * curX * curY;
+        _R.data = _mm256_set1_ps(  R  );
+    _delta.data = _mm256_set1_ps(DELTA);
+
+    for (int y = 0; y < WINDOW_HEIGHT; y++) {
+        __8f_t Y = {};
+        __8f_t X = {};
+        
+        X.data = _mm256_set1_ps(START_X);
+        X.data = _mm256_add_ps(X.data, _startPoint.data);
+        Y.data = _mm256_set1_ps(START_Y + y * DELTA);
+
+        for (int x = 0; x < WINDOW_WIDTH; x += 8) {
+            __8f_t curX  =  X;
+            __8f_t curY  =  Y;
+            __8f_t  p1   = {};
+            __8f_t  p2   = {};
+            __8f_t  p3   = {};
+            __8f_t  N    = {};
+            __8f_t  mask = {};
+
+            mask.data = _mm256_set1_ps(1);
+
+            for (int n = 0; n < MAX_N; n++) {
+                p1.data = _mm256_mul_ps(curX.data, curX.data);                                                      // p1 = curX * curX;
+                p2.data = _mm256_mul_ps(curY.data, curY.data);                                                      // p2 = curY * curY;
+
+                p3.data = _mm256_add_ps(_mm256_mul_ps(curX.data, curY.data), _mm256_mul_ps(curX.data, curY.data));  //  p3 = 2 * curX * curY;
                 
-                curX = p1 - p2 + x;
-                curY =   p3    + y;
+                curX.data = _mm256_add_ps(_mm256_sub_ps(p1.data, p2.data), X.data);                                 //  curX = p1 - p2 + x;
+                curY.data = _mm256_add_ps(p3.data, Y.data);                                                         //  curY =    p3   + y;
 
-                if (p1 + p2 > R) break;
+                p3.data = _mm256_add_ps(p1.data, p2.data);
+
+                __8f_t cmp = {};
+                cmp.data = _mm256_cmp_ps(p3.data, _R.data, _CMP_LE_OS);                                             
+                cmp.data = _mm256_and_ps(mask.data, cmp.data);
+
+                bool flag = 0;
+                for (int i = 0; i < 8; i++) flag |= (int) cmp.fdata[i];
+
+                if (!flag) break;
+
+                N.data   = _mm256_add_ps(cmp.data, N.data);
             }
-
-            curX = (x - START_X) / DELTA;
-            curY = (y - START_Y) / DELTA;
 
             sf::Color curPixel = {};
 
-            if (n == MAX_N)
-                curPixel = sf::Color::Black;
-            else 
-                curPixel = sf::Color((n * *red_k), n, (n * *blue_k));
+            for (int cur = 0; cur < 8; cur++) {
+                float n = N.fdata[cur];
 
-            image -> setPixel(curX, curY, curPixel);
+                if (n == MAX_N)
+                    curPixel = sf::Color::Black;
+                else
+                    curPixel = sf::Color((n * *red_k), n, (n * *blue_k));
+
+                image->setPixel(x + cur, y, curPixel);
+            }
+
+            X.data = _mm256_add_ps(X.data, _mm256_mul_ps(_delta.data, _mm256_set1_ps(8)));
         }
     }
     return 1;
+}
+
+void drawMandelbrot(sf::RenderWindow *window, sf::Image image) {
+    sf::Texture texture = {};
+    texture.loadFromImage(image);
+    sf::Sprite sprite = {};
+    sprite.setTexture(texture);
+    window -> draw(sprite);
+    window -> display();
 }
 
 void updateFPS(FPS* fps) {
