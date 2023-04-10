@@ -7,7 +7,7 @@ int main()
     sf::RenderWindow window(sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT), L"Mandelbrot", sf::Style::Default);
 
     sf::Image image = {};
-    image.create(WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color::Green);
+    image.create(WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color::Cyan);
 
     float RED  = START_KRED;
     float BLUE = START_KBLUE;
@@ -15,6 +15,10 @@ int main()
     FPS curfps = {};
 
     int drawFlag = 1;
+
+    float   curX   = START_X;
+    float   curY   = START_Y;
+    float curDelta =  DELTA ;
 
     while (window.isOpen())
     {
@@ -24,13 +28,23 @@ int main()
             if (event.type == sf::Event::Closed)
                 window.close();
         }
-        
-        buildMandelbrot(&image, &RED, &BLUE);
+
+        buildMandelbrot(&image, &RED, &BLUE, drawFlag, curX, curY, curDelta);
 
         updateFPS(&curfps);
 
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Escape))
             drawFlag ^= 1;
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::W)) curY -= 3 * curDelta;
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) curX -= 3 * curDelta;
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::S)) curY += 3 * curDelta;
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::D)) curX += 3 * curDelta;
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Z)) curDelta /= 1.1f;
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::X)) curDelta *= 1.1;
+        fprintf(logs, "%lg %lg\n", curX, curY);
+
 
         window.setTitle(curfps.fps);
 
@@ -43,9 +57,9 @@ int main()
     return 0;
 }
 
-int buildMandelbrot(sf::Image *image, float *red_k, float *blue_k) {
-    const float maxY = START_Y + WINDOW_HEIGHT * DELTA;
-    const float maxX = START_X +  WINDOW_WIDTH * DELTA;
+int buildMandelbrot(sf::Image *image, float *red_k, float *blue_k, bool drawFlag, const float startX, const float startY, const float DELTA) {
+    const float maxY = startY + WINDOW_HEIGHT * DELTA;
+    const float maxX = startX +  WINDOW_WIDTH * DELTA;
 
     *blue_k = *blue_k + rand() % 10 / 10.f;
     *red_k  = *red_k  + rand() % 10 / 10.f;
@@ -58,24 +72,27 @@ int buildMandelbrot(sf::Image *image, float *red_k, float *blue_k) {
         _R.data = _mm256_set1_ps(  R  );
     _delta.data = _mm256_set1_ps(DELTA);
 
+    __8f_t   Y   = {};
+    __8f_t   X   = {};
+    __8f_t   p1  = {};
+    __8f_t   p2  = {};
+    __8f_t   p3  = {};
+    __8f_t  mask = {};
+    __8f_t  curX = {};
+    __8f_t  curY = {};
+    
+    __8i_t   N   = {};
+
     for (int y = 0; y < WINDOW_HEIGHT; y++) {
-        __8f_t Y = {};
-        __8f_t X = {};
-        
-        X.data = _mm256_set1_ps(START_X);
+        X.data = _mm256_set1_ps(startX);
         X.data = _mm256_add_ps(X.data, _startPoint.data);
-        Y.data = _mm256_set1_ps(START_Y + y * DELTA);
+        Y.data = _mm256_set1_ps(startY + y * DELTA);
 
         for (int x = 0; x < WINDOW_WIDTH; x += 8) {
-            __8f_t curX  =  X;
-            __8f_t curY  =  Y;
-            __8f_t  p1   = {};
-            __8f_t  p2   = {};
-            __8f_t  p3   = {};
-            __8f_t  N    = {};
-            __8f_t  mask = {};
+            curX  =  X;
+            curY  =  Y;
 
-            mask.data = _mm256_set1_ps(1);
+            N.data = _mm256_set1_epi32(MAX_N);
 
             for (int n = 0; n < MAX_N; n++) {
                 p1.data = _mm256_mul_ps(curX.data, curX.data);                                                      // p1 = curX * curX;
@@ -89,28 +106,29 @@ int buildMandelbrot(sf::Image *image, float *red_k, float *blue_k) {
                 p3.data = _mm256_add_ps(p1.data, p2.data);
 
                 __8f_t cmp = {};
-                cmp.data = _mm256_cmp_ps(p3.data, _R.data, _CMP_LE_OS);                                             
-                cmp.data = _mm256_and_ps(mask.data, cmp.data);
+                cmp.data = _mm256_cmp_ps(p3.data, _R.data, _CMP_LT_OQ);                                             
 
-                bool flag = 0;
-                for (int i = 0; i < 8; i++) flag |= (int) cmp.fdata[i];
-
+                int  flag = _mm256_movemask_ps(cmp.data);
                 if (!flag) break;
 
-                N.data   = _mm256_add_ps(cmp.data, N.data);
+                N.data = _mm256_sub_epi32(N.data, _mm256_castps_si256(cmp.data));
             }
+            N.data = _mm256_sub_epi32(N.data, _mm256_set1_epi32(MAX_N));
 
-            sf::Color curPixel = {};
+            if (drawFlag) {
 
-            for (int cur = 0; cur < 8; cur++) {
-                float n = N.fdata[cur];
+                sf::Color curPixel = {};
 
-                if (n == MAX_N)
-                    curPixel = sf::Color::Black;
-                else
-                    curPixel = sf::Color((n * *red_k), n, (n * *blue_k));
+                for (int cur = 0; cur < 8; cur++) {
+                    float n = N.idata[cur];
 
-                image->setPixel(x + cur, y, curPixel);
+                    if (n == MAX_N)
+                        curPixel = sf::Color::Black;
+                    else
+                        curPixel = sf::Color((n * *red_k), n, (n * *blue_k));
+
+                    image->setPixel(x + cur, y, curPixel);
+                }
             }
 
             X.data = _mm256_add_ps(X.data, _mm256_mul_ps(_delta.data, _mm256_set1_ps(8)));
